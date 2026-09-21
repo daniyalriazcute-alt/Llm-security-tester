@@ -5,7 +5,7 @@ aligned with OWASP LLM Top 10 2025.
 
 ## Stack
 - LangGraph (multi-agent orchestration)
-- Groq (openai/gpt-oss-120b)
+- Groq (openai/gpt-oss-20b)
 - Streamlit (UI)
 - SQLite (users)
 
