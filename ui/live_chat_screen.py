@@ -1,4 +1,4 @@
-"""Live chat screen — runs the LangGraph test loop with live agent status."""
+"""Live chat screen — runs the LangGraph test loop with live agent status (sidebar)."""
 import difflib
 import time
 import streamlit as st
@@ -40,11 +40,9 @@ def _bubble(icon, color, border, who, who_color, body, mono=False, pulse=False):
 
 
 # ---------------------------------------------------------------------------
-# Live agent status panel
+# Live agent status panel (for sidebar)
 # ---------------------------------------------------------------------------
 def _render_status_panel(status_map: dict, timings: dict):
-    """status_map: {agent_name: 'waiting'|'thinking'|'done'}
-       timings:   {agent_name: elapsed_seconds}"""
     rows = []
     for name, icon, color, bg, border in AGENTS:
         state = status_map.get(name, "waiting")
@@ -64,11 +62,14 @@ def _render_status_panel(status_map: dict, timings: dict):
         else:
             badge = '<span style="color:#5F5E5A;">○ waiting</span>'
 
+        bg_active = bg if state != "waiting" else "#1A1A1A"
+        border_active = border if state != "waiting" else "#2C2C2A"
+
         rows.append(
             f"""
             <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
-                        background:{bg if state != 'waiting' else '#1A1A1A'};
-                        border:0.5px solid {border if state != 'waiting' else '#2C2C2A'};
+                        background:{bg_active};
+                        border:0.5px solid {border_active};
                         border-radius:10px;margin-bottom:6px;transition:all 0.3s ease;">
               <div style="flex:none;width:28px;height:28px;border-radius:50%;
                           background:{bg};color:{color};display:flex;align-items:center;
@@ -121,7 +122,7 @@ def _prompt_diff(old: str, new: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Chat block for a single round
+# Single round block
 # ---------------------------------------------------------------------------
 def _render_round_block(record: dict, patch: dict | None, round_num: int, category: str):
     st.markdown(f'<div class="rd">Round {round_num} · {category}</div>', unsafe_allow_html=True)
@@ -164,34 +165,45 @@ def render_live_screen():
     categories = cfg.get("categories", [])
     total_rounds = cfg.get("rounds", 5)
 
-    # ---------------- Header ----------------
+    # ============================================================
+    # SIDEBAR — live agent status panel
+    # ============================================================
+    with st.sidebar:
+        st.markdown(
+            '<div style="font-size:11px;color:#B4B2A9;text-transform:uppercase;'
+            'letter-spacing:0.7px;margin-bottom:8px;">🛡️ Agent status</div>',
+            unsafe_allow_html=True,
+        )
+        status_slot = st.empty()
+
+        st.markdown("---")
+        st.markdown(
+            '<div style="font-size:11px;color:#B4B2A9;text-transform:uppercase;'
+            'letter-spacing:0.7px;margin-bottom:8px;">📊 Progress</div>',
+            unsafe_allow_html=True,
+        )
+        progress_slot = st.empty()
+
+        st.markdown("---")
+        st.caption(
+            f"**Rounds:** {total_rounds}\n\n"
+            f"**Categories:** {len(categories)}\n\n"
+            + "  \n".join(f"- {c}" for c in categories)
+        )
+
+    # ============================================================
+    # MAIN AREA
+    # ============================================================
     st.markdown(
         f"""
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <span style="font-size:16px;font-weight:500;color:#F1EFE8;">📡 Live test</span>
-          <span style="font-size:12px;color:#B4B2A9;">Rounds: {total_rounds}</span>
+          <span style="font-size:12px;color:#B4B2A9;">Round {st.session_state.get('round_display', 1)} of {total_rounds}</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # ---------------- Agent status panel ----------------
-    st.markdown(
-        '<div style="font-size:11px;color:#B4B2A9;text-transform:uppercase;'
-        'letter-spacing:0.7px;margin-bottom:6px;">Agent status</div>',
-        unsafe_allow_html=True,
-    )
-    status_slot = st.empty()
-
-    # ---------------- Progress bar ----------------
-    progress_slot = st.empty()
-
-    # ---------------- Chat area ----------------
-    st.markdown(
-        '<div style="font-size:11px;color:#B4B2A9;text-transform:uppercase;'
-        'letter-spacing:0.7px;margin:18px 0 6px;">Conversation</div>',
-        unsafe_allow_html=True,
-    )
     chat_area = st.container()
 
     # ============================================================
@@ -228,13 +240,20 @@ def render_live_screen():
                     unsafe_allow_html=True,
                 )
 
+        def paint_progress(current_round):
+            with progress_slot.container():
+                pct = min(current_round / max(total_rounds, 1), 1.0)
+                st.progress(pct)
+                st.caption(f"{current_round} / {total_rounds} rounds")
+
         paint_status()
+        paint_progress(0)
 
         # --- Stream the graph ---
         final_state = initial_state
         last_history_len = 0
         last_patch_len = 0
-        last_round = 0
+        last_round = 1
 
         for step_state in graph.stream(initial_state, stream_mode="values", config=config):
             final_state = step_state
@@ -242,13 +261,15 @@ def render_live_screen():
             patches = step_state.get("prompt_patches", [])
             rnd = step_state.get("round", 1)
 
-            # ----- Round transition -> reset status -----
+            # Round transition → reset status
             if rnd != last_round:
                 completed_in_round = set()
                 status_map = {name: "waiting" for name, *_ in AGENTS}
                 last_round = rnd
+                st.session_state.round_display = rnd
+                paint_progress(rnd - 1)
+                paint_status()
 
-            # ----- Infer active agent from state -----
             probe = step_state.get("current_probe", "")
             response = step_state.get("current_response", "")
             new_verdict = len(history) > last_history_len
@@ -256,35 +277,16 @@ def render_live_screen():
 
             now = time.time()
 
-            # Case: verdict was just added -> Judge done, Defender thinking
-            if new_verdict:
-                if "Judge" not in completed_in_round:
-                    timings["Judge"] = now - last_agent_started
-                    status_map["Judge"] = "done"
-                    completed_in_round.add("Judge")
-                status_map["Defender"] = "thinking"
-                last_agent_started = now
-                paint_status()
-
-            # Case: patch was just added -> Defender done
-            if new_patch:
-                if "Defender" not in completed_in_round:
-                    timings["Defender"] = now - last_agent_started
-                    status_map["Defender"] = "done"
-                    completed_in_round.add("Defender")
-                paint_status()
-
-            # Case: probe set but no response -> Attacker done, Target thinking
-            if probe and not response:
-                if "Attacker" not in completed_in_round:
-                    timings["Attacker"] = now - last_agent_started
-                    status_map["Attacker"] = "done"
-                    completed_in_round.add("Attacker")
+            # Attacker → done when probe is set but no response yet
+            if probe and not response and "Attacker" not in completed_in_round:
+                timings["Attacker"] = now - last_agent_started
+                status_map["Attacker"] = "done"
+                completed_in_round.add("Attacker")
                 status_map["Target bot"] = "thinking"
                 last_agent_started = now
                 paint_status()
 
-            # Case: response set but no verdict yet -> Target done, Judge thinking
+            # Target bot → done when response is set but no verdict yet
             if response and not new_verdict and "Target bot" not in completed_in_round:
                 timings["Target bot"] = now - last_agent_started
                 status_map["Target bot"] = "done"
@@ -293,20 +295,30 @@ def render_live_screen():
                 last_agent_started = now
                 paint_status()
 
-            # ----- Progress bar -----
-            progress_slot.progress(min(rnd / max(total_rounds, 1), 1.0))
+            # Judge → done when verdict is added
+            if new_verdict and "Judge" not in completed_in_round:
+                timings["Judge"] = now - last_agent_started
+                status_map["Judge"] = "done"
+                completed_in_round.add("Judge")
+                status_map["Defender"] = "thinking"
+                last_agent_started = now
+                paint_status()
 
-            # ----- Render new verdict only once -----
+            # Defender → done when patch is added
+            if new_patch and "Defender" not in completed_in_round:
+                timings["Defender"] = now - last_agent_started
+                status_map["Defender"] = "done"
+                completed_in_round.add("Defender")
+                paint_status()
+
+            # Render new verdict only once
             if new_verdict:
                 last_history_len = len(history)
-
-                # Attach the matching patch if it exists
                 this_patch = None
                 for p in patches:
                     if p["round"] == history[-1]["round"]:
                         this_patch = p
                         break
-
                 with chat_area:
                     _render_round_block(
                         history[-1],
@@ -321,7 +333,7 @@ def render_live_screen():
         for name, *_ in AGENTS:
             status_map[name] = "done"
         paint_status()
-        progress_slot.progress(1.0)
+        paint_progress(total_rounds)
 
         st.session_state.graph_done = True
         st.session_state.final_state = final_state
@@ -347,7 +359,9 @@ def render_live_screen():
             done_map = {name: "done" for name, *_ in AGENTS}
             st.markdown(_render_status_panel(done_map, {}), unsafe_allow_html=True)
 
-        progress_slot.progress(1.0)
+        with progress_slot.container():
+            st.progress(1.0)
+            st.caption(f"{total_rounds} / {total_rounds} rounds")
 
         hist = final_state.get("history", [])
         patches = final_state.get("prompt_patches", [])
@@ -379,7 +393,6 @@ def render_live_screen():
         col2.metric("Rounds", len(hist))
         col3.metric("Prompt version", f"v{1 + len(patches)}")
 
-    # Prompt evolution section
     if patches:
         st.markdown("### 🧬 Prompt evolution")
         st.caption("See exactly what the Defender changed after each failure.")
@@ -411,9 +424,8 @@ def render_live_screen():
         st.markdown("### 📜 System prompt used")
         st.code(final_state.get("system_prompt", ""), language="markdown")
 
-    # New test
     if st.button("🔄 New test", use_container_width=True):
-        for key in ["graph_done", "final_state", "test_config"]:
+        for key in ["graph_done", "final_state", "test_config", "round_display"]:
             st.session_state.pop(key, None)
         st.session_state.page = "app"
         st.rerun()
