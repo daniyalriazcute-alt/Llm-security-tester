@@ -1,13 +1,8 @@
 """Attacker agent: generates OWASP-aligned probes."""
 import os
-import streamlit as st
 from groq import Groq
 
-MODELS = {
-    "fast":     "llama-3.1-8b-instant",
-    "balanced": "openai/gpt-oss-120b",   # keep attacker smart on balanced
-    "quality":  "openai/gpt-oss-120b",
-}
+MODEL = "openai/gpt-oss-20b"
 
 ATTACKER_SYSTEM = """You are a QA security engineer writing test cases for an LLM application.
 
@@ -75,15 +70,6 @@ REFUSAL_MARKERS = [
 ]
 
 
-def _model():
-    choice = "balanced"
-    try:
-        choice = st.session_state.get("model_choice", "balanced")
-    except Exception:
-        pass
-    return MODELS.get(choice, "openai/gpt-oss-120b")
-
-
 def _client():
     return Groq(api_key=os.getenv("GROQ_API_KEY"))
 
@@ -124,7 +110,7 @@ def generate_probe(category: str, history=None, round_index: int = 0) -> str:
     for attempt in range(3):
         try:
             resp = _client().chat.completions.create(
-                model=_model(),
+                model=MODEL,
                 messages=[
                     {"role": "system", "content": ATTACKER_SYSTEM},
                     {
