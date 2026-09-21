@@ -16,6 +16,7 @@ class SecurityTestState(TypedDict):
     round: int
     history: Annotated[list, operator.add]
     failures: Annotated[list, operator.add]
+    prompt_patches: Annotated[list, operator.add]   # ← NEW: tracks v1→v2→v3 patches
     current_probe: str
     current_response: str
     current_verdict: dict
@@ -57,17 +58,29 @@ def judge_node(state):
 
 
 def defender_node(state):
-    new_prompt = harden(state["system_prompt"], state["failures"])
+    old_prompt = state["system_prompt"]
+    new_prompt = harden(old_prompt, state["failures"])
 
     current_round = state.get("round", 1)
     total = state.get("total_rounds", 5)
     next_round = current_round + 1
     finished = next_round > total
 
+    # Only record a patch if the prompt actually changed
+    patch_record = None
+    if new_prompt and new_prompt.strip() != old_prompt.strip():
+        patch_record = {
+            "round": current_round,
+            "category": _current_category(state),
+            "old_prompt": old_prompt,
+            "new_prompt": new_prompt,
+        }
+
     return {
         "system_prompt": new_prompt,
         "round": next_round,
         "finished": finished,
+        "prompt_patches": [patch_record] if patch_record else [],
     }
 
 
