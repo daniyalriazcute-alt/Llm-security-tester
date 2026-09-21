@@ -19,8 +19,40 @@ init_db()
 # --- Session state defaults ---
 st.session_state.setdefault("page", "login")
 st.session_state.setdefault("user", None)
+st.session_state.setdefault("theme", "dark")
+st.session_state.setdefault("model_choice", "balanced")
 
-# --- Route ---
+# --- Top bar (only when logged in) ---
+if st.session_state.get("user"):
+    user = st.session_state.user
+    col_l, col_user, col_model, col_logout = st.columns([6, 1.2, 1.5, 1])
+
+    with col_user:
+        st.markdown(
+            f'<div style="text-align:right;font-size:12px;color:#B4B2A9;padding-top:8px;white-space:nowrap;">'
+            f'👤 {user.get("name", "User")}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with col_model:
+        st.selectbox(
+            "Model",
+            ["balanced", "fast", "quality"],
+            key="model_choice",
+            label_visibility="collapsed",
+            help="fast = llama-3.1-8b (high quota) · balanced = hybrid · quality = gpt-oss-120b",
+        )
+
+    with col_logout:
+        if st.button("Logout", key="top_logout", use_container_width=True):
+            for k in ["user", "page", "test_config", "graph_done",
+                      "final_state", "round_display"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    st.markdown("---")
+
+# --- Routing ---
 if st.session_state.user is None:
     render_login_screen()
 elif st.session_state.page == "app":
