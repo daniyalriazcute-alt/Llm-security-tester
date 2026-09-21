@@ -1,4 +1,4 @@
-"""LangGraph wiring: Attacker → Target → Judge → Defender loop."""
+"""LangGraph wiring: Attacker -> Target -> Judge -> Defender loop."""
 from typing import TypedDict, Annotated
 import operator
 from langgraph.graph import StateGraph, START, END
@@ -29,7 +29,8 @@ def _current_category(state):
 
 def attacker_node(state):
     category = _current_category(state)
-    past_probes = [h["probe"] for h in state["history"] if h.get("category") == category]
+    # Collect ALL past probes (not just same-category) to avoid repeats
+    past_probes = [h["probe"] for h in state["history"] if h.get("probe")]
     probe = generate_probe(category, history=past_probes)
     return {"current_probe": probe}
 
@@ -57,16 +58,25 @@ def judge_node(state):
 
 def defender_node(state):
     new_prompt = harden(state["system_prompt"], state["failures"])
-    next_round = state["round"] + 1
+
+    current_round = state.get("round", 1)
+    total = state.get("total_rounds", 5)
+    next_round = current_round + 1
+    finished = next_round > total
+
     return {
         "system_prompt": new_prompt,
         "round": next_round,
-        "finished": next_round > state["total_rounds"],
+        "finished": finished,
     }
 
 
 def _route_after_defender(state):
-    return END if state["finished"] else "attacker"
+    current_round = state.get("round", 1)
+    total = state.get("total_rounds", 5)
+    if state.get("finished") or current_round > total:
+        return END
+    return "attacker"
 
 
 def build_graph():
@@ -80,5 +90,9 @@ def build_graph():
     g.add_edge("attacker", "target")
     g.add_edge("target", "judge")
     g.add_edge("judge", "defender")
-    g.add_conditional_edges("defender", _route_after_defender, {"attacker": "attacker", END: END})
+    g.add_conditional_edges(
+        "defender",
+        _route_after_defender,
+        {"attacker": "attacker", END: END},
+    )
     return g.compile()
