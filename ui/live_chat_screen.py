@@ -1,10 +1,25 @@
-"""Live chat screen — runs the LangGraph test loop."""
+"""Live chat screen — runs the LangGraph test loop with live agent status."""
 import difflib
+import time
 import streamlit as st
 from agents import build_graph
 from database import save_test_run
 
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+AGENTS = [
+    ("Attacker",    "⚔️", "#F09595", "#501313", "#E24B4A"),
+    ("Target bot",  "🤖", "#B4B2A9", "#2C2C2A", "#5F5E5A"),
+    ("Judge",       "⚖️", "#FAC775", "#412402", "#BA7517"),
+    ("Defender",    "🛡️", "#85B7EB", "#042C53", "#378ADD"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Bubbles
+# ---------------------------------------------------------------------------
 def _bubble(icon, color, border, who, who_color, body, mono=False, pulse=False):
     body_class = "mono" if mono else ""
     body_content = f'<span class="pulse">{body}</span>' if pulse else body
@@ -24,8 +39,54 @@ def _bubble(icon, color, border, who, who_color, body, mono=False, pulse=False):
     )
 
 
+# ---------------------------------------------------------------------------
+# Live agent status panel
+# ---------------------------------------------------------------------------
+def _render_status_panel(status_map: dict, timings: dict):
+    """status_map: {agent_name: 'waiting'|'thinking'|'done'}
+       timings:   {agent_name: elapsed_seconds}"""
+    rows = []
+    for name, icon, color, bg, border in AGENTS:
+        state = status_map.get(name, "waiting")
+
+        if state == "thinking":
+            badge = (
+                f'<span style="color:{color};display:inline-flex;align-items:center;gap:6px;">'
+                f'<span style="width:8px;height:8px;border-radius:50%;background:{color};'
+                f'animation:p 1s ease-in-out infinite;"></span>thinking…</span>'
+            )
+        elif state == "done":
+            t = timings.get(name)
+            time_str = f" · {t:.1f}s" if t is not None else ""
+            badge = f'<span style="color:#97C459;">✅ done{time_str}</span>'
+        elif state == "failed":
+            badge = '<span style="color:#F09595;">❌ failed</span>'
+        else:
+            badge = '<span style="color:#5F5E5A;">○ waiting</span>'
+
+        rows.append(
+            f"""
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
+                        background:{bg if state != 'waiting' else '#1A1A1A'};
+                        border:0.5px solid {border if state != 'waiting' else '#2C2C2A'};
+                        border-radius:10px;margin-bottom:6px;transition:all 0.3s ease;">
+              <div style="flex:none;width:28px;height:28px;border-radius:50%;
+                          background:{bg};color:{color};display:flex;align-items:center;
+                          justify-content:center;font-size:15px;border:1.5px solid {border};">
+                {icon}
+              </div>
+              <span style="color:#F1EFE8;font-size:13px;font-weight:500;">{name}</span>
+              <span style="margin-left:auto;font-size:12px;">{badge}</span>
+            </div>
+            """
+        )
+    return "".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Diff renderer
+# ---------------------------------------------------------------------------
 def _prompt_diff(old: str, new: str) -> str:
-    """Return an HTML-colored diff between two prompt versions."""
     old_lines = old.splitlines()
     new_lines = new.splitlines()
     diff = list(difflib.unified_diff(old_lines, new_lines, lineterm="", n=1))
@@ -59,15 +120,54 @@ def _prompt_diff(old: str, new: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Chat block for a single round
+# ---------------------------------------------------------------------------
+def _render_round_block(record: dict, patch: dict | None, round_num: int, category: str):
+    st.markdown(f'<div class="rd">Round {round_num} · {category}</div>', unsafe_allow_html=True)
+
+    _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", record["probe"], mono=True)
+    _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", record["response"])
+
+    sev_color = "#F09595" if record["verdict"] == "FAIL" else "#97C459"
+    st.markdown(
+        f"""
+        <div style="background:#412402;border:0.5px solid #854F0B;border-radius:12px;
+                    padding:10px 12px;margin:0 0 12px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span style="font-size:16px;">⚖️</span>
+            <span style="font-size:13px;font-weight:500;color:#FAC775;">Judge verdict</span>
+            <span style="margin-left:auto;font-size:11px;font-weight:500;padding:2px 8px;
+                         border-radius:6px;background:#501313;color:{sev_color};">{record["verdict"]}</span>
+            <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;
+                         background:#633806;color:#FAC775;">{record["severity"]}</span>
+          </div>
+          <div style="font-size:13px;color:#F1EFE8;line-height:1.5;">{record["reason"]}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if patch:
+        _bubble(
+            "🛡️", "#85B7EB", "#185FA5", "Defender", "#85B7EB",
+            f"Patched prompt with OWASP guardrails. Ref: {patch['category']}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# MAIN SCREEN
+# ---------------------------------------------------------------------------
 def render_live_screen():
     cfg = st.session_state.get("test_config") or {}
     system_prompt = cfg.get("system_prompt", "")
     categories = cfg.get("categories", [])
     total_rounds = cfg.get("rounds", 5)
 
+    # ---------------- Header ----------------
     st.markdown(
         f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <span style="font-size:16px;font-weight:500;color:#F1EFE8;">📡 Live test</span>
           <span style="font-size:12px;color:#B4B2A9;">Rounds: {total_rounds}</span>
         </div>
@@ -75,9 +175,28 @@ def render_live_screen():
         unsafe_allow_html=True,
     )
 
-    chat_area = st.container()
-    progress = st.progress(0.0)
+    # ---------------- Agent status panel ----------------
+    st.markdown(
+        '<div style="font-size:11px;color:#B4B2A9;text-transform:uppercase;'
+        'letter-spacing:0.7px;margin-bottom:6px;">Agent status</div>',
+        unsafe_allow_html=True,
+    )
+    status_slot = st.empty()
 
+    # ---------------- Progress bar ----------------
+    progress_slot = st.empty()
+
+    # ---------------- Chat area ----------------
+    st.markdown(
+        '<div style="font-size:11px;color:#B4B2A9;text-transform:uppercase;'
+        'letter-spacing:0.7px;margin:18px 0 6px;">Conversation</div>',
+        unsafe_allow_html=True,
+    )
+    chat_area = st.container()
+
+    # ============================================================
+    # FIRST RUN — execute graph
+    # ============================================================
     if "graph_done" not in st.session_state:
         graph = build_graph()
         initial_state = {
@@ -94,53 +213,120 @@ def render_live_screen():
             "finished": False,
         }
 
-        config = {"recursion_limit": (total_rounds * 4) + 4}
+        config = {"recursion_limit": (total_rounds * 4) + 8}
 
+        # --- Status bookkeeping ---
+        status_map = {name: "waiting" for name, *_ in AGENTS}
+        timings = {}
+        completed_in_round = set()
+        last_agent_started = time.time()
+
+        def paint_status():
+            with status_slot.container():
+                st.markdown(
+                    _render_status_panel(status_map, timings),
+                    unsafe_allow_html=True,
+                )
+
+        paint_status()
+
+        # --- Stream the graph ---
         final_state = initial_state
         last_history_len = 0
+        last_patch_len = 0
+        last_round = 0
 
         for step_state in graph.stream(initial_state, stream_mode="values", config=config):
             final_state = step_state
             history = step_state.get("history", [])
+            patches = step_state.get("prompt_patches", [])
             rnd = step_state.get("round", 1)
-            progress.progress(min(rnd / max(total_rounds, 1), 1.0))
 
-            # Only redraw when a NEW verdict was added
-            if len(history) == last_history_len:
-                continue
-            last_history_len = len(history)
+            # ----- Round transition -> reset status -----
+            if rnd != last_round:
+                completed_in_round = set()
+                status_map = {name: "waiting" for name, *_ in AGENTS}
+                last_round = rnd
 
-            with chat_area:
-                cat = categories[(rnd - 1) % len(categories)] if categories else "—"
-                st.markdown(f'<div class="rd">Round {rnd} · {cat}</div>', unsafe_allow_html=True)
-                last = history[-1]
-                _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", last["probe"], mono=True)
-                _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", last["response"])
-                sev_color = "#F09595" if last["verdict"] == "FAIL" else "#97C459"
-                st.markdown(
-                    f"""
-                    <div style="background:#412402;border:0.5px solid #854F0B;border-radius:12px;
-                                padding:10px 12px;margin:0 0 12px;">
-                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                        <span style="font-size:16px;">⚖️</span>
-                        <span style="font-size:13px;font-weight:500;color:#FAC775;">Judge verdict</span>
-                        <span style="margin-left:auto;font-size:11px;font-weight:500;padding:2px 8px;
-                                     border-radius:6px;background:#501313;color:{sev_color};">{last["verdict"]}</span>
-                        <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;
-                                     background:#633806;color:#FAC775;">{last["severity"]}</span>
-                      </div>
-                      <div style="font-size:13px;color:#F1EFE8;line-height:1.5;">{last["reason"]}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if last["verdict"] == "FAIL":
-                    _bubble("🛡️", "#85B7EB", "#185FA5", "Defender", "#85B7EB",
-                            "Patched prompt with OWASP guardrails. Ref: " + last["category"])
+            # ----- Infer active agent from state -----
+            probe = step_state.get("current_probe", "")
+            response = step_state.get("current_response", "")
+            new_verdict = len(history) > last_history_len
+            new_patch = len(patches) > last_patch_len
+
+            now = time.time()
+
+            # Case: verdict was just added -> Judge done, Defender thinking
+            if new_verdict:
+                if "Judge" not in completed_in_round:
+                    timings["Judge"] = now - last_agent_started
+                    status_map["Judge"] = "done"
+                    completed_in_round.add("Judge")
+                status_map["Defender"] = "thinking"
+                last_agent_started = now
+                paint_status()
+
+            # Case: patch was just added -> Defender done
+            if new_patch:
+                if "Defender" not in completed_in_round:
+                    timings["Defender"] = now - last_agent_started
+                    status_map["Defender"] = "done"
+                    completed_in_round.add("Defender")
+                paint_status()
+
+            # Case: probe set but no response -> Attacker done, Target thinking
+            if probe and not response:
+                if "Attacker" not in completed_in_round:
+                    timings["Attacker"] = now - last_agent_started
+                    status_map["Attacker"] = "done"
+                    completed_in_round.add("Attacker")
+                status_map["Target bot"] = "thinking"
+                last_agent_started = now
+                paint_status()
+
+            # Case: response set but no verdict yet -> Target done, Judge thinking
+            if response and not new_verdict and "Target bot" not in completed_in_round:
+                timings["Target bot"] = now - last_agent_started
+                status_map["Target bot"] = "done"
+                completed_in_round.add("Target bot")
+                status_map["Judge"] = "thinking"
+                last_agent_started = now
+                paint_status()
+
+            # ----- Progress bar -----
+            progress_slot.progress(min(rnd / max(total_rounds, 1), 1.0))
+
+            # ----- Render new verdict only once -----
+            if new_verdict:
+                last_history_len = len(history)
+
+                # Attach the matching patch if it exists
+                this_patch = None
+                for p in patches:
+                    if p["round"] == history[-1]["round"]:
+                        this_patch = p
+                        break
+
+                with chat_area:
+                    _render_round_block(
+                        history[-1],
+                        this_patch,
+                        history[-1]["round"],
+                        history[-1]["category"],
+                    )
+
+            last_patch_len = len(patches)
+
+        # Final state
+        for name, *_ in AGENTS:
+            status_map[name] = "done"
+        paint_status()
+        progress_slot.progress(1.0)
 
         st.session_state.graph_done = True
         st.session_state.final_state = final_state
 
+        # Save run
         user = st.session_state.get("user") or {}
         if user.get("id"):
             hist = final_state.get("history", [])
@@ -151,49 +337,50 @@ def render_live_screen():
             except Exception:
                 pass
 
+    # ============================================================
+    # SUBSEQUENT RERUNS — redraw from cache
+    # ============================================================
     else:
         final_state = st.session_state.get("final_state", {})
+
+        with status_slot.container():
+            done_map = {name: "done" for name, *_ in AGENTS}
+            st.markdown(_render_status_panel(done_map, {}), unsafe_allow_html=True)
+
+        progress_slot.progress(1.0)
+
         hist = final_state.get("history", [])
-        for record in hist:
-            cat = record.get("category", "—")
-            st.markdown(f'<div class="rd">Round {record["round"]} · {cat}</div>', unsafe_allow_html=True)
-            _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", record["probe"], mono=True)
-            _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", record["response"])
-            sev_color = "#F09595" if record["verdict"] == "FAIL" else "#97C459"
-            st.markdown(
-                f"""
-                <div style="background:#412402;border:0.5px solid #854F0B;border-radius:12px;
-                            padding:10px 12px;margin:0 0 12px;">
-                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                    <span style="font-size:16px;">⚖️</span>
-                    <span style="font-size:13px;font-weight:500;color:#FAC775;">Judge verdict</span>
-                    <span style="margin-left:auto;font-size:11px;font-weight:500;padding:2px 8px;
-                                 border-radius:6px;background:#501313;color:{sev_color};">{record["verdict"]}</span>
-                    <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;
-                                 background:#633806;color:#FAC775;">{record["severity"]}</span>
-                  </div>
-                  <div style="font-size:13px;color:#F1EFE8;line-height:1.5;">{record["reason"]}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        patches = final_state.get("prompt_patches", [])
+        patch_by_round = {p["round"]: p for p in patches}
+
+        with chat_area:
+            for record in hist:
+                _render_round_block(
+                    record,
+                    patch_by_round.get(record["round"]),
+                    record["round"],
+                    record.get("category", "—"),
+                )
 
     # ============================================================
-    # SUMMARY + PROMPT EVOLUTION LOG
+    # SUMMARY + PROMPT EVOLUTION REPORT
     # ============================================================
+    st.markdown("---")
+
     hist = final_state.get("history", [])
     patches = final_state.get("prompt_patches", [])
 
     if hist:
         passes = sum(1 for h in hist if h["verdict"] == "PASS")
         rate = int(passes / len(hist) * 100)
-        col1, col2 = st.columns(2)
-        col1.metric("Pass rate", f"{rate}%")
-        col2.metric("Prompt version", f"v{1 + len(patches)}")
 
-    # Prompt Evolution section
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Pass rate", f"{rate}%")
+        col2.metric("Rounds", len(hist))
+        col3.metric("Prompt version", f"v{1 + len(patches)}")
+
+    # Prompt evolution section
     if patches:
-        st.markdown("---")
         st.markdown("### 🧬 Prompt evolution")
         st.caption("See exactly what the Defender changed after each failure.")
 
@@ -213,7 +400,6 @@ def render_live_screen():
                     unsafe_allow_html=True,
                 )
 
-        st.markdown("---")
         st.markdown("### 📜 Final hardened prompt")
         st.caption(f"v{1 + len(patches)} — copy this into your production prompt.")
         st.code(final_state.get("system_prompt", ""), language="markdown")
@@ -222,10 +408,10 @@ def render_live_screen():
             "✅ No patches were needed — your original prompt resisted all probes. "
             "Prompt version stayed at v1."
         )
-        st.markdown("---")
         st.markdown("### 📜 System prompt used")
         st.code(final_state.get("system_prompt", ""), language="markdown")
 
+    # New test
     if st.button("🔄 New test", use_container_width=True):
         for key in ["graph_done", "final_state", "test_config"]:
             st.session_state.pop(key, None)
