@@ -57,8 +57,11 @@ def render_live_screen():
             "finished": False,
         }
 
+        # Give LangGraph enough headroom for all rounds (4 nodes per round + buffer)
+        config = {"recursion_limit": (total_rounds * 4) + 4}
+
         final_state = initial_state
-        for step_state in graph.stream(initial_state, stream_mode="values"):
+        for step_state in graph.stream(initial_state, stream_mode="values", config=config):
             final_state = step_state
             history = step_state.get("history", [])
             rnd = step_state.get("round", 1)
@@ -70,7 +73,6 @@ def render_live_screen():
                     last = history[-1]
                     _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", last["probe"], mono=True)
                     _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", last["response"])
-                    # Judge verdict
                     sev_color = "#F09595" if last["verdict"] == "FAIL" else "#97C459"
                     st.markdown(
                         f"""
@@ -96,7 +98,6 @@ def render_live_screen():
         st.session_state.graph_done = True
         st.session_state.final_state = final_state
 
-        # Save run
         user = st.session_state.get("user") or {}
         if user.get("id"):
             hist = final_state.get("history", [])
@@ -108,5 +109,43 @@ def render_live_screen():
                 pass
 
     else:
-        # Redraw final state on re-runs
-        final_state = st
+        final_state = st.session_state.get("final_state", {})
+        hist = final_state.get("history", [])
+        for record in hist:
+            cat = record.get("category", "—")
+            st.markdown(f'<div class="rd">Round {record["round"]} · {cat}</div>', unsafe_allow_html=True)
+            _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", record["probe"], mono=True)
+            _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", record["response"])
+            sev_color = "#F09595" if record["verdict"] == "FAIL" else "#97C459"
+            st.markdown(
+                f"""
+                <div style="background:#412402;border:0.5px solid #854F0B;border-radius:12px;
+                            padding:10px 12px;margin:0 0 12px;">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                    <span style="font-size:16px;">⚖️</span>
+                    <span style="font-size:13px;font-weight:500;color:#FAC775;">Judge verdict</span>
+                    <span style="margin-left:auto;font-size:11px;font-weight:500;padding:2px 8px;
+                                 border-radius:6px;background:#501313;color:{sev_color};">{record["verdict"]}</span>
+                    <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;
+                                 background:#633806;color:#FAC775;">{record["severity"]}</span>
+                  </div>
+                  <div style="font-size:13px;color:#F1EFE8;line-height:1.5;">{record["reason"]}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    # Summary + reset
+    hist = final_state.get("history", [])
+    if hist:
+        passes = sum(1 for h in hist if h["verdict"] == "PASS")
+        rate = int(passes / len(hist) * 100)
+        col1, col2 = st.columns(2)
+        col1.metric("Pass rate", f"{rate}%")
+        col2.metric("Prompt version", f"v{1 + len(final_state.get('failures', []))}")
+
+    if st.button("🔄 New test", use_container_width=True):
+        for key in ["graph_done", "final_state", "test_config"]:
+            st.session_state.pop(key, None)
+        st.session_state.page = "app"
+        st.rerun()
