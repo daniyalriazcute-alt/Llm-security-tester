@@ -28,24 +28,13 @@ def render_login_screen():
             unsafe_allow_html=True,
         )
 
-        # --- AI Offensive Security hero image ---
-        st.markdown(
-            """
-            <div style="background:#0b0e13;border-radius:20px;border:1px solid #2a3440;
-                        padding:12px;box-shadow:0 20px 40px -15px rgba(0,0,0,0.8),
-                        0 0 30px rgba(55,138,221,0.1);margin-bottom:16px;">
-              <img src="https://i.imgur.com/your-uploaded-image.png"
-                   alt="AI Offensive Security — Attacker, Judge, Defender"
-                   style="width:100%;border-radius:12px;display:block;">
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        # --- AI Offensive Security hero image (loaded from repo) ---
+        st.image("assets/AI Offensive Security.jpg", use_container_width=True)
 
         # --- Badges ---
         st.markdown(
             """
-            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;">
               <span class="badge">OWASP LLM Top 10 2025</span>
               <span class="badge">Attacker, Judge, Defender</span>
               <span class="badge">Free to use</span>
