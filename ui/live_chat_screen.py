@@ -1,4 +1,5 @@
 """Live chat screen — runs the LangGraph test loop."""
+import difflib
 import streamlit as st
 from agents import build_graph
 from database import save_test_run
@@ -20,6 +21,41 @@ def _bubble(icon, color, border, who, who_color, body, mono=False, pulse=False):
         </div>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _prompt_diff(old: str, new: str) -> str:
+    """Return an HTML-colored diff between two prompt versions."""
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    diff = list(difflib.unified_diff(old_lines, new_lines, lineterm="", n=1))
+
+    html_parts = []
+    for line in diff:
+        if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+            continue
+        safe = line.replace("<", "&lt;").replace(">", "&gt;")
+        if line.startswith("+"):
+            html_parts.append(
+                f'<div style="color:#97C459;background:#173404;padding:2px 6px;'
+                f'border-radius:4px;margin:1px 0;">{safe}</div>'
+            )
+        elif line.startswith("-"):
+            html_parts.append(
+                f'<div style="color:#F09595;background:#501313;padding:2px 6px;'
+                f'border-radius:4px;margin:1px 0;">{safe}</div>'
+            )
+        else:
+            html_parts.append(
+                f'<div style="color:#B4B2A9;padding:2px 6px;">{safe}</div>'
+            )
+
+    if not html_parts:
+        return '<div style="color:#B4B2A9;font-size:12px;">No changes detected.</div>'
+    return (
+        '<div style="font-family:SF Mono,Fira Code,monospace;font-size:11px;line-height:1.5;">'
+        + "".join(html_parts)
+        + "</div>"
     )
 
 
@@ -51,49 +87,56 @@ def render_live_screen():
             "round": 1,
             "history": [],
             "failures": [],
+            "prompt_patches": [],
             "current_probe": "",
             "current_response": "",
             "current_verdict": {},
             "finished": False,
         }
 
-        # Give LangGraph enough headroom for all rounds (4 nodes per round + buffer)
         config = {"recursion_limit": (total_rounds * 4) + 4}
 
         final_state = initial_state
+        last_history_len = 0
+
         for step_state in graph.stream(initial_state, stream_mode="values", config=config):
             final_state = step_state
             history = step_state.get("history", [])
             rnd = step_state.get("round", 1)
             progress.progress(min(rnd / max(total_rounds, 1), 1.0))
+
+            # Only redraw when a NEW verdict was added
+            if len(history) == last_history_len:
+                continue
+            last_history_len = len(history)
+
             with chat_area:
                 cat = categories[(rnd - 1) % len(categories)] if categories else "—"
                 st.markdown(f'<div class="rd">Round {rnd} · {cat}</div>', unsafe_allow_html=True)
-                if history:
-                    last = history[-1]
-                    _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", last["probe"], mono=True)
-                    _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", last["response"])
-                    sev_color = "#F09595" if last["verdict"] == "FAIL" else "#97C459"
-                    st.markdown(
-                        f"""
-                        <div style="background:#412402;border:0.5px solid #854F0B;border-radius:12px;
-                                    padding:10px 12px;margin:0 0 12px;">
-                          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                            <span style="font-size:16px;">⚖️</span>
-                            <span style="font-size:13px;font-weight:500;color:#FAC775;">Judge verdict</span>
-                            <span style="margin-left:auto;font-size:11px;font-weight:500;padding:2px 8px;
-                                         border-radius:6px;background:#501313;color:{sev_color};">{last["verdict"]}</span>
-                            <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;
-                                         background:#633806;color:#FAC775;">{last["severity"]}</span>
-                          </div>
-                          <div style="font-size:13px;color:#F1EFE8;line-height:1.5;">{last["reason"]}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    if last["verdict"] == "FAIL":
-                        _bubble("🛡️", "#85B7EB", "#185FA5", "Defender", "#85B7EB",
-                                "Patched prompt with OWASP guardrails. Ref: " + last["category"])
+                last = history[-1]
+                _bubble("⚔️", "#F09595", "#A32D2D", "Attacker", "#F09595", last["probe"], mono=True)
+                _bubble("🤖", "#B4B2A9", "#5F5E5A", "Target bot", "#B4B2A9", last["response"])
+                sev_color = "#F09595" if last["verdict"] == "FAIL" else "#97C459"
+                st.markdown(
+                    f"""
+                    <div style="background:#412402;border:0.5px solid #854F0B;border-radius:12px;
+                                padding:10px 12px;margin:0 0 12px;">
+                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <span style="font-size:16px;">⚖️</span>
+                        <span style="font-size:13px;font-weight:500;color:#FAC775;">Judge verdict</span>
+                        <span style="margin-left:auto;font-size:11px;font-weight:500;padding:2px 8px;
+                                     border-radius:6px;background:#501313;color:{sev_color};">{last["verdict"]}</span>
+                        <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:6px;
+                                     background:#633806;color:#FAC775;">{last["severity"]}</span>
+                      </div>
+                      <div style="font-size:13px;color:#F1EFE8;line-height:1.5;">{last["reason"]}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if last["verdict"] == "FAIL":
+                    _bubble("🛡️", "#85B7EB", "#185FA5", "Defender", "#85B7EB",
+                            "Patched prompt with OWASP guardrails. Ref: " + last["category"])
 
         st.session_state.graph_done = True
         st.session_state.final_state = final_state
@@ -135,14 +178,53 @@ def render_live_screen():
                 unsafe_allow_html=True,
             )
 
-    # Summary + reset
+    # ============================================================
+    # SUMMARY + PROMPT EVOLUTION LOG
+    # ============================================================
     hist = final_state.get("history", [])
+    patches = final_state.get("prompt_patches", [])
+
     if hist:
         passes = sum(1 for h in hist if h["verdict"] == "PASS")
         rate = int(passes / len(hist) * 100)
         col1, col2 = st.columns(2)
         col1.metric("Pass rate", f"{rate}%")
-        col2.metric("Prompt version", f"v{1 + len(final_state.get('failures', []))}")
+        col2.metric("Prompt version", f"v{1 + len(patches)}")
+
+    # Prompt Evolution section
+    if patches:
+        st.markdown("---")
+        st.markdown("### 🧬 Prompt evolution")
+        st.caption("See exactly what the Defender changed after each failure.")
+
+        for i, patch in enumerate(patches, start=1):
+            with st.expander(
+                f"Patch {i} · Round {patch['round']} · {patch['category']} (v{i} → v{i+1})",
+                expanded=(i == len(patches)),
+            ):
+                st.markdown(
+                    '<div style="font-size:12px;color:#B4B2A9;margin-bottom:8px;">'
+                    "<b>Diff:</b> <span style='color:#97C459;'>green = added</span>, "
+                    "<span style='color:#F09595;'>red = removed</span></div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    _prompt_diff(patch["old_prompt"], patch["new_prompt"]),
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("---")
+        st.markdown("### 📜 Final hardened prompt")
+        st.caption(f"v{1 + len(patches)} — copy this into your production prompt.")
+        st.code(final_state.get("system_prompt", ""), language="markdown")
+    else:
+        st.info(
+            "✅ No patches were needed — your original prompt resisted all probes. "
+            "Prompt version stayed at v1."
+        )
+        st.markdown("---")
+        st.markdown("### 📜 System prompt used")
+        st.code(final_state.get("system_prompt", ""), language="markdown")
 
     if st.button("🔄 New test", use_container_width=True):
         for key in ["graph_done", "final_state", "test_config"]:
