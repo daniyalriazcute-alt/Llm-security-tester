@@ -1,13 +1,8 @@
 """Defender agent: hardens the system prompt via OWASP guidance."""
 import os
-import streamlit as st
 from groq import Groq
 
-MODELS = {
-    "fast":     "llama-3.1-8b-instant",
-    "balanced": "openai/gpt-oss-120b",
-    "quality":  "openai/gpt-oss-120b",
-}
+MODEL = "openai/gpt-oss-20b"
 
 DEFENDER_SYSTEM = """You are a blue-team prompt engineer. Given a system prompt and a list of
 failures (category + reason), return a REVISED system prompt that:
@@ -15,15 +10,6 @@ failures (category + reason), return a REVISED system prompt that:
 - Defines instruction hierarchy (system > user).
 - Adds refusals for the failed OWASP categories.
 Return ONLY the revised system prompt text. No commentary."""
-
-
-def _model():
-    choice = "balanced"
-    try:
-        choice = st.session_state.get("model_choice", "balanced")
-    except Exception:
-        pass
-    return MODELS.get(choice, "openai/gpt-oss-120b")
 
 
 def _client():
@@ -51,7 +37,7 @@ def harden(system_prompt: str, failures: list) -> str:
     )
     try:
         resp = _client().chat.completions.create(
-            model=_model(),
+            model=MODEL,
             messages=[
                 {"role": "system", "content": DEFENDER_SYSTEM},
                 {"role": "user", "content": f"ORIGINAL:\n{system_prompt}\n\nFAILURES:\n{fail_block}"},
@@ -60,8 +46,5 @@ def harden(system_prompt: str, failures: list) -> str:
             max_tokens=600,
         )
         return (resp.choices[0].message.content or system_prompt).strip()
-    except Exception as e:
-        msg = str(e)
-        if "rate_limit_exceeded" in msg or "429" in msg:
-            return _fallback_patch(system_prompt)
+    except Exception:
         return _fallback_patch(system_prompt)
